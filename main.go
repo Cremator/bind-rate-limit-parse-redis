@@ -203,6 +203,9 @@ func extractCIDRsFromMessage(m string) []string {
 		if c, err := cidr.Parse(m); err != nil {
 			log.Println("Error parsing CIDR:", err)
 			return matches
+		} else if ones, _ := c.MaskSize(); ones < 24 {
+			log.Println("Error netmask is quite not /24:", m)
+			return matches
 		} else {
 			matches = append(matches, c.CIDR().String())
 		}
