@@ -5,15 +5,15 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/redis/rueidis"
-	syslog "gopkg.in/mcuadros/go-syslog.v2"
-	"gopkg.in/mcuadros/go-syslog.v2/format"
 )
 
 var (
@@ -107,63 +107,80 @@ func main() {
 }
 
 func startSyslogServer() {
-	// Create a new syslog server
-	channel := make(syslog.LogPartsChannel)
-	handler := syslog.NewChannelHandler(channel)
+	defer cancel()
 
-	server := syslog.NewServer()
-	server.SetFormat(syslog.RFC5424)
-	server.SetHandler(handler)
+	// Set up a UDP listener on port 514
+	addr, err := net.ResolveUDPAddr("udp", ":514")
+	if err != nil {
+		log.Fatalf("Failed to resolve UDP address: %v", err)
+	}
 
-	go func(channel syslog.LogPartsChannel) {
-		for logParts := range channel {
-			cidrs := extractCIDRsFromMessage(&logParts)
-			if len(cidrs) == 0 {
-				return
-			}
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		log.Fatalf("Failed to listen on UDP: %v", err)
+	}
+	defer conn.Close()
 
-			// Store CIDRs in Redis with expiration
-			for _, cidr := range cidrs {
-				key := cidrKeyPrefix + cidr
-				resp := rdb.Do(ctx, rdb.B().Setex().Key(key).Seconds(int64(expiration)).Value("1").Build())
-				if err := resp.Error(); err != nil {
-					fmt.Println("Error inserting CIDR into Redis:", err)
+	fmt.Println("Rsyslog server is listening on port 514...")
+
+	// Start a goroutine to handle incoming messages
+	go handleSyslogMessages(conn)
+
+	// Wait for interrupt signal to gracefully shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	<-sigCh
+
+	fmt.Println("Shutting down server...")
+
+}
+
+func handleSyslogMessages(conn *net.UDPConn) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			buffer := make([]byte, 1024)
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second)) // Set read deadline to avoid blocking indefinitely
+			n, _, err := conn.ReadFromUDP(buffer)
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					continue // Timeout error, continue listening
 				}
+				log.Printf("Failed to read UDP message: %v", err)
+				continue
 			}
+			// Print the received syslog message
+			fmt.Printf("Received syslog message: %s\n", buffer[:n])
+			insertCIRDsToRedis(extractCIDRsFromMessage(fmt.Sprint(buffer[:n])))
 		}
-	}(channel)
-
-	// Listen on UDP port 514 for syslog messages
-	if err := server.ListenUDP("0.0.0.0:514"); err != nil {
-		fmt.Println("Error starting syslog server:", err)
-		return
-	}
-
-	// Start the syslog server
-	if err := server.Boot(); err != nil {
-		fmt.Println("Error starting syslog server:", err)
-		return
-	}
-
-	fmt.Printf("Syslog Server listening on port %s\n", "0.0.0.0:514")
-
-	server.Wait()
-
-	<-ctx.Done()
-
-	// Shutdown syslog server gracefully
-	if err := server.Kill(); err != nil {
-		fmt.Println("Syslog server shutdown error:", err)
 	}
 }
 
-func extractCIDRsFromMessage(m *format.LogParts) []string {
+func extractCIDRsFromMessage(m string) []string {
 	// Extract CIDRs from the message
 	cidrRegex := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}\b`)
-	text := (*m)["message"]
-	matches := cidrRegex.FindAllString(text.(string), -1)
+	matches := cidrRegex.FindAllString(m, -1)
 
 	return matches
+}
+
+func insertCIRDsToRedis(c []string) error {
+	if len(c) == 0 {
+		return fmt.Errorf("zero length")
+	}
+
+	// Store CIDRs in Redis with expiration
+	for _, cidr := range c {
+		key := cidrKeyPrefix + cidr
+		resp := rdb.Do(ctx, rdb.B().Setex().Key(key).Seconds(int64(expiration)).Value("1").Build())
+		if err := resp.Error(); err != nil {
+			fmt.Println("Error inserting CIDR into Redis:", err)
+			return err
+		}
+	}
+	return nil
 }
 
 func getAllCIDRs() ([]string, error) {
