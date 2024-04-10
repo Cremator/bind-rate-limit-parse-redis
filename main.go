@@ -243,8 +243,13 @@ func getAllCIDRs(ctx context.Context, rdb rueidis.Client) ([]string, error) {
 	var cidrs []string
 	for _, key := range keys {
 		// Remove the prefix from the key
-		cidr := strings.TrimPrefix(key, cidrKeyPrefix)
-		cidrs = append(cidrs, cidr)
+		add := strings.TrimPrefix(key, cidrKeyPrefix)
+		if c, err := cidr.Parse(add); err != nil {
+			fmt.Println("Error parsing CIDR:", err)
+			continue
+		} else {
+			cidrs = append(cidrs, c.CIDR().String())
+		}
 	}
 	return cidrs, nil
 }
