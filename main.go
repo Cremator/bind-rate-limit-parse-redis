@@ -24,6 +24,7 @@ var (
 	cidrWebPrefix string
 	expiration    int
 	redisDB       int
+	threads       int
 	httpPort      string
 )
 
@@ -33,6 +34,7 @@ func init() {
 	flag.StringVar(&cidrWebPrefix, "/"+"prefix", "/cidrs", "Prefix for HTTP CIDRs endpoint")
 	flag.IntVar(&expiration, "expiration", 86400, "Expiration time for individual CIDRs (in seconds)")
 	flag.IntVar(&redisDB, "redisdb", 2, "Select Redis DB")
+	flag.IntVar(&threads, "threads", 2, "Select server threads")
 	flag.StringVar(&httpPort, "port", "8080", "HTTP server port")
 	flag.Parse()
 }
@@ -48,7 +50,7 @@ func main() {
 
 	go func() {
 		<-sigCh
-		fmt.Println("Received termination signal. Shutting down...")
+		log.Println("Received termination signal. Shutting down...")
 		cancel()
 	}()
 
@@ -68,7 +70,7 @@ func main() {
 	if err := resp.Error(); err != nil {
 		log.Fatalf("Error while pinging redis server = %v", err)
 	} else {
-		fmt.Println("Received PONG...")
+		log.Printf("Received PONG from Redis at %s, DB: %d\n", redisAddr, redisDB)
 	}
 
 	// Start syslog server
@@ -97,11 +99,11 @@ func main() {
 	})
 
 	// Start listening on the specified port
-	fmt.Printf("HTTP Server listening on port %s\n", httpPort)
+	log.Printf("HTTP Server listening on port %s\n", httpPort)
 	server := http.Server{Addr: ":" + httpPort}
 	go func() {
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			fmt.Println("HTTP server error:", err)
+			log.Println("HTTP server error:", err)
 		}
 	}()
 
@@ -109,9 +111,9 @@ func main() {
 	<-ctx.Done()
 
 	// Shutdown HTTP server gracefully
-	fmt.Println("Shutting down HTTP server...")
+	log.Println("Shutting down HTTP server...")
 	if err := server.Shutdown(context.Background()); err != nil {
-		fmt.Println("HTTP server shutdown error:", err)
+		log.Println("HTTP server shutdown error:", err)
 	}
 }
 
@@ -140,12 +142,15 @@ func startSyslogServer(ctx context.Context, rdb rueidis.Client) {
 	}
 	defer tcpListener.Close()
 
-	fmt.Println("Rsyslog server is listening on port 514...")
+	log.Println("Rsyslog server is listening on port 514...")
+
+	// Create a channel to handle concurrent syslog message processing
+	messageChan := make(chan []byte)
 
 	// Start a goroutine to handle UDP syslog messages
-	go handleSyslogMessages(ctx, udpConn, rdb)
+	go handleSyslogConnection(ctx, udpConn, messageChan)
 
-	// Start a goroutine to handle TCP syslog messages
+	// Start a goroutine to handle TCP syslog connections
 	go func() {
 		for {
 			select {
@@ -154,21 +159,38 @@ func startSyslogServer(ctx context.Context, rdb rueidis.Client) {
 			default:
 				tcpConn, err := tcpListener.Accept()
 				if err != nil {
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						continue // Timeout error, continue listening
+					}
 					log.Printf("Failed to accept TCP connection: %v", err)
 					continue
 				}
-				go handleSyslogMessages(ctx, tcpConn, rdb)
+				go handleSyslogConnection(ctx, tcpConn, messageChan)
 			}
 		}
 	}()
 
+	// Start multiple goroutines to process syslog messages concurrently
+	for i := 0; i < threads; i++ {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case msg := <-messageChan:
+					insertCIDRsToRedis(ctx, rdb, extractCIDRsFromMessage(string(msg)))
+				}
+			}
+		}()
+	}
+
 	// Wait for interrupt signal to gracefully shutdown
 	<-ctx.Done()
 
-	fmt.Println("Shutting down syslog server...")
+	log.Println("Shutting down syslog server...")
 }
 
-func handleSyslogMessages(ctx context.Context, conn net.Conn, rdb rueidis.Client) {
+func handleSyslogConnection(ctx context.Context, conn net.Conn, messageChan chan<- []byte) {
 	defer conn.Close()
 
 	buffer := make([]byte, 1024)
@@ -186,9 +208,7 @@ func handleSyslogMessages(ctx context.Context, conn net.Conn, rdb rueidis.Client
 				log.Printf("Failed to read UDP message: %v", err)
 				return
 			}
-			// Print the received syslog message
-			fmt.Printf("Received syslog message: %s\n", buffer[:n])
-			insertCIRDsToRedis(ctx, rdb, extractCIDRsFromMessage(string(buffer[:n])))
+			messageChan <- buffer[:n]
 		}
 	}
 }
@@ -200,7 +220,7 @@ func extractCIDRsFromMessage(m string) []string {
 	var matches []string
 	for _, m := range matchesr {
 		if c, err := cidr.Parse(m); err != nil {
-			fmt.Println("Error parsing CIDR:", err)
+			log.Println("Error parsing CIDR:", err)
 			return matches
 		} else {
 			matches = append(matches, c.CIDR().String())
@@ -209,7 +229,7 @@ func extractCIDRsFromMessage(m string) []string {
 	return matches
 }
 
-func insertCIRDsToRedis(ctx context.Context, rdb rueidis.Client, c []string) {
+func insertCIDRsToRedis(ctx context.Context, rdb rueidis.Client, c []string) {
 	if len(c) == 0 {
 		return
 	}
@@ -217,16 +237,16 @@ func insertCIRDsToRedis(ctx context.Context, rdb rueidis.Client, c []string) {
 	// Store CIDRs in Redis with expiration
 	for _, cidr := range c {
 		key := cidrKeyPrefix + cidr
-		//fmt.Printf("Trying to insert %s key into Redis\n", key)
+		//log.Printf("Trying to insert %s key into Redis\n", key)
 		r := rand.Intn(expiration) + expiration
 		resp := rdb.Do(ctx, rdb.B().Set().Key(key).Value("1").Build())
 		if err := resp.Error(); err != nil {
-			fmt.Println("Error inserting CIDR into Redis:", err)
+			log.Println("Error inserting CIDR into Redis:", err)
 			return
 		}
 		resp = rdb.Do(ctx, rdb.B().Expire().Key(key).Seconds(int64(r)).Build())
 		if err := resp.Error(); err != nil {
-			fmt.Println("Error expiring CIDR into Redis:", err)
+			log.Println("Error expiring CIDR from Redis:", err)
 			return
 		}
 	}
@@ -245,7 +265,7 @@ func getAllCIDRs(ctx context.Context, rdb rueidis.Client) ([]string, error) {
 		// Remove the prefix from the key
 		add := strings.TrimPrefix(key, cidrKeyPrefix)
 		if c, err := cidr.Parse(add); err != nil {
-			fmt.Println("Error parsing CIDR:", err)
+			log.Println("Error parsing CIDR:", err)
 			continue
 		} else {
 			cidrs = append(cidrs, c.CIDR().String())
