@@ -61,6 +61,14 @@ func main() {
 		log.Fatalf("Error while creating new connection error = %v", err)
 	}
 
+	resp := rdb.Do(ctx, rdb.B().Ping().Build())
+
+	if err := resp.Error(); err != nil {
+		log.Fatalf("Error while pinging redis server = %v", err)
+	} else {
+		fmt.Println("Received PONG...")
+	}
+
 	// Start syslog server
 	go startSyslogServer(ctx, rdb)
 
@@ -199,6 +207,7 @@ func insertCIRDsToRedis(ctx context.Context, rdb rueidis.Client, c []string) {
 	// Store CIDRs in Redis with expiration
 	for _, cidr := range c {
 		key := cidrKeyPrefix + cidr
+		fmt.Printf("Trying ro insert %s key into Redis:", key)
 		resp := rdb.Do(ctx, rdb.B().Setex().Key(key).Seconds(int64(expiration)).Value("1").Build())
 		if err := resp.Error(); err != nil {
 			fmt.Println("Error inserting CIDR into Redis:", err)
