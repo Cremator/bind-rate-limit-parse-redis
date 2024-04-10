@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -207,13 +208,14 @@ func insertCIRDsToRedis(ctx context.Context, rdb rueidis.Client, c []string) {
 	// Store CIDRs in Redis with expiration
 	for _, cidr := range c {
 		key := cidrKeyPrefix + cidr
-		fmt.Printf("Trying to insert %s key into Redis\n", key)
+		//fmt.Printf("Trying to insert %s key into Redis\n", key)
+		r := rand.Intn(expiration) + expiration
 		resp := rdb.Do(ctx, rdb.B().Set().Key(key).Value("1").Build())
 		if err := resp.Error(); err != nil {
 			fmt.Println("Error inserting CIDR into Redis:", err)
 			return
 		}
-		resp = rdb.Do(ctx, rdb.B().Expire().Key(key).Seconds(int64(expiration)).Build())
+		resp = rdb.Do(ctx, rdb.B().Expire().Key(key).Seconds(int64(r)).Build())
 		if err := resp.Error(); err != nil {
 			fmt.Println("Error expiring CIDR into Redis:", err)
 			return
