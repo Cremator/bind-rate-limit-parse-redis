@@ -107,24 +107,55 @@ func main() {
 }
 
 func startSyslogServer() {
+	// Create a context with cancellation capability
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Set up a UDP listener on port 514
-	addr, err := net.ResolveUDPAddr("udp", ":514")
+	// Set up UDP listener on port 514
+	udpAddr, err := net.ResolveUDPAddr("udp", ":514")
 	if err != nil {
 		log.Fatalf("Failed to resolve UDP address: %v", err)
 	}
 
-	conn, err := net.ListenUDP("udp", addr)
+	udpConn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
 		log.Fatalf("Failed to listen on UDP: %v", err)
 	}
-	defer conn.Close()
+	defer udpConn.Close()
+
+	// Set up TCP listener on port 514
+	tcpAddr, err := net.ResolveTCPAddr("tcp", ":514")
+	if err != nil {
+		log.Fatalf("Failed to resolve TCP address: %v", err)
+	}
+
+	tcpListener, err := net.ListenTCP("tcp", tcpAddr)
+	if err != nil {
+		log.Fatalf("Failed to listen on TCP: %v", err)
+	}
+	defer tcpListener.Close()
 
 	fmt.Println("Rsyslog server is listening on port 514...")
 
-	// Start a goroutine to handle incoming messages
-	go handleSyslogMessages(conn)
+	// Start a goroutine to handle UDP syslog messages
+	go handleSyslogMessages(udpConn)
+
+	// Start a goroutine to handle TCP syslog messages
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				tcpConn, err := tcpListener.Accept()
+				if err != nil {
+					log.Printf("Failed to accept TCP connection: %v", err)
+					continue
+				}
+				go handleSyslogMessages(tcpConn)
+			}
+		}
+	}()
 
 	// Wait for interrupt signal to gracefully shutdown
 	sigCh := make(chan os.Signal, 1)
@@ -132,10 +163,9 @@ func startSyslogServer() {
 	<-sigCh
 
 	fmt.Println("Shutting down server...")
-
 }
 
-func handleSyslogMessages(conn *net.UDPConn) {
+func handleSyslogMessages(conn net.Conn) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -143,7 +173,7 @@ func handleSyslogMessages(conn *net.UDPConn) {
 		default:
 			buffer := make([]byte, 1024)
 			conn.SetReadDeadline(time.Now().Add(5 * time.Second)) // Set read deadline to avoid blocking indefinitely
-			n, _, err := conn.ReadFromUDP(buffer)
+			n, err := conn.Read(buffer)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					continue // Timeout error, continue listening
