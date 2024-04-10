@@ -186,7 +186,7 @@ func handleSyslogMessages(ctx context.Context, conn net.Conn, rdb rueidis.Client
 			}
 			// Print the received syslog message
 			fmt.Printf("Received syslog message: %s\n", buffer[:n])
-			insertCIRDsToRedis(ctx, rdb, extractCIDRsFromMessage(fmt.Sprint(buffer[:n])))
+			insertCIRDsToRedis(ctx, rdb, extractCIDRsFromMessage(string(buffer[:n])))
 		}
 	}
 }
