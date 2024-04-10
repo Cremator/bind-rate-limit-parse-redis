@@ -208,9 +208,14 @@ func insertCIRDsToRedis(ctx context.Context, rdb rueidis.Client, c []string) {
 	for _, cidr := range c {
 		key := cidrKeyPrefix + cidr
 		fmt.Printf("Trying to insert %s key into Redis\n", key)
-		resp := rdb.Do(ctx, rdb.B().Setex().Key(key).Seconds(int64(expiration)).Value("1").Build())
+		resp := rdb.Do(ctx, rdb.B().Set().Key(key).Value("1").Build())
 		if err := resp.Error(); err != nil {
 			fmt.Println("Error inserting CIDR into Redis:", err)
+			return
+		}
+		resp = rdb.Do(ctx, rdb.B().Expire().Key(key).Seconds(int64(expiration)).Build())
+		if err := resp.Error(); err != nil {
+			fmt.Println("Error expiring CIDR into Redis:", err)
 			return
 		}
 	}
