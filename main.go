@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
@@ -244,6 +243,7 @@ func getAllCIDRs(ctx context.Context, rdb rueidis.Client) ([]string, error) {
 	}
 	// Extract CIDRs from keys
 	var cidrs []string
+	var sorted []*cidr.CIDR
 	for _, key := range keys {
 		// Remove the prefix from the key
 		add := strings.TrimPrefix(key, cidrKeyPrefix)
@@ -254,9 +254,12 @@ func getAllCIDRs(ctx context.Context, rdb rueidis.Client) ([]string, error) {
 			log.Printf("Wrong bits CIDR: %#v, from address: %#v, from key: %#v\n", c.CIDR().String(), add, key)
 			continue
 		} else {
-			cidrs = append(cidrs, c.CIDR().String())
+			sorted = append(sorted, c)
 		}
 	}
-	slices.Sort(cidrs)
+	cidr.SortCIDRAsc(sorted)
+	for _, c := range sorted {
+		cidrs = append(cidrs, c.CIDR().String())
+	}
 	return cidrs, nil
 }
