@@ -238,7 +238,7 @@ func getAllCIDRs(ctx context.Context, rdb rueidis.Client) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	log.Printf("Redis Keys:\n%#v\n", keys)
 	// Extract CIDRs from keys
 	var cidrs []string
 	var sorted []*cidr.CIDR
@@ -252,9 +252,7 @@ func getAllCIDRs(ctx context.Context, rdb rueidis.Client) ([]string, error) {
 			sorted = append(sorted, c)
 		}
 	}
-	log.Printf("Original CIDR:\n%#v\n", sorted)
 	cidr.SortCIDRAsc(sorted)
-	log.Printf("Sorted CIDR:\n%#v\n", sorted)
 	for _, c := range sorted {
 		cidrs = append(cidrs, c.CIDR().String())
 	}
