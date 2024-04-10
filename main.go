@@ -248,7 +248,7 @@ func getAllCIDRs(ctx context.Context, rdb rueidis.Client) ([]string, error) {
 			log.Println("Error parsing CIDR:", err)
 			continue
 		} else if ones, _ := c.MaskSize(); ones != 24 {
-			log.Println("Wrong bits CIDR:", c.CIDR().String())
+			log.Printf("Wrong bits CIDR: %#v, from address: %#v, from key: %#v\n", c.CIDR().String(), add, key)
 			continue
 		} else {
 			cidrs = append(cidrs, c.CIDR().String())
