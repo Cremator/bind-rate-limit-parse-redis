@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/3th1nk/cidr"
 	"github.com/redis/rueidis"
 )
 
@@ -195,8 +196,16 @@ func handleSyslogMessages(ctx context.Context, conn net.Conn, rdb rueidis.Client
 func extractCIDRsFromMessage(m string) []string {
 	// Extract CIDRs from the message
 	cidrRegex := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}\b`)
-	matches := cidrRegex.FindAllString(m, -1)
-
+	matchesr := cidrRegex.FindAllString(m, -1)
+	var matches []string
+	for _, m := range matchesr {
+		if c, err := cidr.Parse(m); err != nil {
+			fmt.Println("Error parsing CIDR:", err)
+			return matches
+		} else {
+			matches = append(matches, c.CIDR().String())
+		}
+	}
 	return matches
 }
 
