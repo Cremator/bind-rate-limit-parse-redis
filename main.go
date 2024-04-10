@@ -23,33 +23,21 @@ var (
 	expiration    int
 	redisDB       int
 	httpPort      string
-	ctx, cancel   = context.WithCancel(context.Background())
-	rdb           rueidis.Client
-	err           error
 )
 
 func init() {
 	flag.StringVar(&redisAddr, "redis", "localhost:6379", "Redis server address")
 	flag.StringVar(&cidrKeyPrefix, "prefix"+":", "cidrs:", "Prefix for keys to store CIDRs")
-	flag.StringVar(&cidrWebPrefix, "/"+"prefix", "/cidrs", "Prefix for keys to get CIDRs")
+	flag.StringVar(&cidrWebPrefix, "/"+"prefix", "/cidrs", "Prefix for HTTP CIDRs endpoint")
 	flag.IntVar(&expiration, "expiration", 86400, "Expiration time for individual CIDRs (in seconds)")
 	flag.IntVar(&redisDB, "redisdb", 2, "Select Redis DB")
 	flag.StringVar(&httpPort, "port", "8080", "HTTP server port")
 	flag.Parse()
-
-	// Initialize Redis client
-	rdb, err = rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:      []string{redisAddr},
-		DisableCache:     true,
-		AlwaysPipelining: true,
-		SelectDB:         redisDB,
-	})
-	if err != nil {
-		log.Fatalf("Error while creating new connection error = %v", err)
-	}
 }
 
 func main() {
+	// Create a parent context
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Handle OS signals to trigger cancellation
@@ -62,8 +50,19 @@ func main() {
 		cancel()
 	}()
 
+	// Initialize Redis client
+	rdb, err := rueidis.NewClient(rueidis.ClientOption{
+		InitAddress:      []string{redisAddr},
+		DisableCache:     true,
+		AlwaysPipelining: true,
+		SelectDB:         redisDB,
+	})
+	if err != nil {
+		log.Fatalf("Error while creating new connection error = %v", err)
+	}
+
 	// Start syslog server
-	go startSyslogServer()
+	go startSyslogServer(ctx, rdb)
 
 	// Start HTTP server
 	http.HandleFunc(cidrWebPrefix, func(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +72,7 @@ func main() {
 			return
 		default:
 			// Retrieve all CIDRs from Redis
-			cidrs, err := getAllCIDRs()
+			cidrs, err := getAllCIDRs(ctx, rdb)
 			if err != nil {
 				http.Error(w, "Failed to retrieve CIDRs", http.StatusInternalServerError)
 				return
@@ -106,11 +105,7 @@ func main() {
 	}
 }
 
-func startSyslogServer() {
-	// Create a context with cancellation capability
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+func startSyslogServer(ctx context.Context, rdb rueidis.Client) {
 	// Set up UDP listener on port 514
 	udpAddr, err := net.ResolveUDPAddr("udp", ":514")
 	if err != nil {
@@ -138,7 +133,7 @@ func startSyslogServer() {
 	fmt.Println("Rsyslog server is listening on port 514...")
 
 	// Start a goroutine to handle UDP syslog messages
-	go handleSyslogMessages(udpConn)
+	go handleSyslogMessages(ctx, udpConn, rdb)
 
 	// Start a goroutine to handle TCP syslog messages
 	go func() {
@@ -152,26 +147,26 @@ func startSyslogServer() {
 					log.Printf("Failed to accept TCP connection: %v", err)
 					continue
 				}
-				go handleSyslogMessages(tcpConn)
+				go handleSyslogMessages(ctx, tcpConn, rdb)
 			}
 		}
 	}()
 
 	// Wait for interrupt signal to gracefully shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
-	<-sigCh
+	<-ctx.Done()
 
-	fmt.Println("Shutting down server...")
+	fmt.Println("Shutting down syslog server...")
 }
 
-func handleSyslogMessages(conn net.Conn) {
+func handleSyslogMessages(ctx context.Context, conn net.Conn, rdb rueidis.Client) {
+	defer conn.Close()
+
+	buffer := make([]byte, 1024)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			buffer := make([]byte, 1024)
 			conn.SetReadDeadline(time.Now().Add(5 * time.Second)) // Set read deadline to avoid blocking indefinitely
 			n, err := conn.Read(buffer)
 			if err != nil {
@@ -179,11 +174,11 @@ func handleSyslogMessages(conn net.Conn) {
 					continue // Timeout error, continue listening
 				}
 				log.Printf("Failed to read UDP message: %v", err)
-				continue
+				return
 			}
 			// Print the received syslog message
 			fmt.Printf("Received syslog message: %s\n", buffer[:n])
-			insertCIRDsToRedis(extractCIDRsFromMessage(fmt.Sprint(buffer[:n])))
+			insertCIRDsToRedis(ctx, rdb, extractCIDRsFromMessage(fmt.Sprint(buffer[:n])))
 		}
 	}
 }
@@ -196,9 +191,9 @@ func extractCIDRsFromMessage(m string) []string {
 	return matches
 }
 
-func insertCIRDsToRedis(c []string) error {
+func insertCIRDsToRedis(ctx context.Context, rdb rueidis.Client, c []string) {
 	if len(c) == 0 {
-		return fmt.Errorf("zero length")
+		return
 	}
 
 	// Store CIDRs in Redis with expiration
@@ -207,13 +202,12 @@ func insertCIRDsToRedis(c []string) error {
 		resp := rdb.Do(ctx, rdb.B().Setex().Key(key).Seconds(int64(expiration)).Value("1").Build())
 		if err := resp.Error(); err != nil {
 			fmt.Println("Error inserting CIDR into Redis:", err)
-			return err
+			return
 		}
 	}
-	return nil
 }
 
-func getAllCIDRs() ([]string, error) {
+func getAllCIDRs(ctx context.Context, rdb rueidis.Client) ([]string, error) {
 	// Get all keys matching the prefix
 	keys, err := rdb.Do(ctx, rdb.B().Keys().Pattern(cidrKeyPrefix+"*").Build()).AsStrSlice()
 	if err != nil {
