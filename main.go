@@ -192,12 +192,12 @@ func extractCIDRsFromMessage(m string) []string {
 	cidrRegex := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}\b`)
 	matchesr := cidrRegex.FindAllString(m, -1)
 	var matches []string
-	for _, m := range matchesr {
-		if c, err := cidr.Parse(m); err != nil {
+	for _, ms := range matchesr {
+		if c, err := cidr.Parse(ms); err != nil {
 			log.Println("Error parsing CIDR:", err)
 			return matches
-		} else if ones, _ := c.MaskSize(); ones < 24 || m != c.CIDR().String() {
-			log.Printf("Error CIDR conversion - origin - %s - convert - %s\n", m, c.CIDR().String())
+		} else if ones, _ := c.MaskSize(); ones < 24 || ms != c.CIDR().String() {
+			log.Printf("Error CIDR conversion - origin - %s - convert - %s\n", ms, c.CIDR().String())
 			return matches
 		} else {
 			matches = append(matches, c.CIDR().String())
