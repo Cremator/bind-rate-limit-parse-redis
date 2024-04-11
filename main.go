@@ -196,7 +196,7 @@ func extractCIDRsFromMessage(m string) []string {
 		if c, err := cidr.Parse(ms); err != nil {
 			log.Println("Error parsing CIDR:", err)
 			return matches
-		} else if ones, _ := c.MaskSize(); ones < 24 || ms != c.CIDR().String() {
+		} else if ones, _ := c.MaskSize(); ones < 24 || ms != c.CIDR().String() || !validCIDR(c) {
 			log.Printf("Error CIDR conversion - origin - %s - convert - %s\n", ms, c.CIDR().String())
 			return matches
 		} else {
@@ -256,4 +256,31 @@ func getAllCIDRs(ctx context.Context, rdb rueidis.Client) ([]string, error) {
 		cidrs = append(cidrs, c.CIDR().String())
 	}
 	return cidrs, nil
+}
+
+func validCIDR(c *cidr.CIDR) bool {
+	invalidCIDR := []*cidr.CIDR{
+		cidr.ParseNoError("0.0.0.0/8"),
+		cidr.ParseNoError("10.0.0.0/8"),
+		cidr.ParseNoError("100.64.0.0/10"),
+		cidr.ParseNoError("127.0.0.0/8"),
+		cidr.ParseNoError("169.254.0.0/16"),
+		cidr.ParseNoError("172.16.0.0/12"),
+		cidr.ParseNoError("192.0.0.0/24"),
+		cidr.ParseNoError("192.0.2.0/24"),
+		cidr.ParseNoError("192.88.99.0/24"),
+		cidr.ParseNoError("192.168.0.0/16"),
+		cidr.ParseNoError("198.18.0.0/15"),
+		cidr.ParseNoError("198.51.100.0/24"),
+		cidr.ParseNoError("203.0.113.0/24"),
+		cidr.ParseNoError("240.0.0.0/4"),
+		cidr.ParseNoError("255.255.255.255/32"),
+	}
+
+	for _, r := range invalidCIDR {
+		if r.Contains(c.IP().String()) {
+			return false
+		}
+	}
+	return true
 }
