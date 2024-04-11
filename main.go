@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -171,24 +172,18 @@ func startSyslogServer(ctx context.Context, rdb rueidis.Client) {
 func handleSyslogMessages(ctx context.Context, conn net.Conn, rdb rueidis.Client) {
 	defer conn.Close()
 
-	buffer := make([]byte, 1024)
-	for {
+	reader := bufio.NewScanner(conn)
+	reader.Split(bufio.ScanLines)
+	for reader.Scan() {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 			conn.SetReadDeadline(time.Now().Add(5 * time.Second)) // Set read deadline to avoid blocking indefinitely
-			n, err := conn.Read(buffer)
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					continue // Timeout error, continue listening
-				}
-				log.Printf("Failed to read UDP message: %v", err)
-				return
-			}
+			line := reader.Bytes()
 			// Print the received syslog message
-			log.Printf("Received syslog message: %s\n", buffer[:n])
-			insertCIDRsToRedis(ctx, rdb, extractCIDRsFromMessage(string(buffer[:n])))
+			log.Printf("Received syslog message: %s\n", line[:])
+			insertCIDRsToRedis(ctx, rdb, extractCIDRsFromMessage(string(line[:])))
 		}
 	}
 }
