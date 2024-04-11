@@ -94,6 +94,7 @@ func main() {
 			for _, cidr := range cidrs {
 				fmt.Fprintf(w, "%s\n", cidr)
 			}
+			log.Printf("HTTP Web request for URL: %s, from: %s\n", r.URL, r.RemoteAddr)
 		}
 	})
 
