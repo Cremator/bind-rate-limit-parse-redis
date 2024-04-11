@@ -171,7 +171,6 @@ func startSyslogServer(ctx context.Context, rdb rueidis.Client) {
 
 func handleSyslogMessages(ctx context.Context, conn net.Conn, rdb rueidis.Client) {
 	defer conn.Close()
-
 	reader := bufio.NewScanner(conn)
 	reader.Split(bufio.ScanLines)
 	for reader.Scan() {
@@ -179,7 +178,7 @@ func handleSyslogMessages(ctx context.Context, conn net.Conn, rdb rueidis.Client
 		case <-ctx.Done():
 			return
 		default:
-			conn.SetReadDeadline(time.Now().Add(5 * time.Second)) // Set read deadline to avoid blocking indefinitely
+			conn.SetReadDeadline(time.Now().Add(60 * time.Second)) // Set read deadline to avoid blocking indefinitely
 			line := reader.Bytes()
 			// Print the received syslog message
 			log.Printf("Received syslog message: %s\n", line[:])
