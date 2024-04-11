@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/3th1nk/cidr"
+	"github.com/armon/go-radix"
 	"github.com/redis/rueidis"
 )
 
@@ -194,14 +194,14 @@ func extractCIDRsFromMessage(m string) []string {
 	matchesr := cidrRegex.FindAllString(m, -1)
 	var matches []string
 	for _, ms := range matchesr {
-		if c, err := cidr.Parse(ms); err != nil {
+		if _, c, err := net.ParseCIDR(ms); err != nil {
 			log.Println("Error parsing CIDR:", err)
 			return matches
-		} else if ones, _ := c.MaskSize(); ones < 24 || ms != c.CIDR().String() || !validCIDR(c) {
-			log.Printf("Error CIDR conversion - origin - %s - convert - %s\n", ms, c.CIDR().String())
+		} else if ones, _ := c.Mask.Size(); ones < 24 || ms != c.String() || !validCIDR(c) {
+			log.Printf("Error CIDR conversion - origin - %s - convert - %s\n", ms, c.String())
 			return matches
 		} else {
-			matches = append(matches, c.CIDR().String())
+			matches = append(matches, c.String())
 		}
 	}
 	return matches
@@ -238,50 +238,128 @@ func getAllCIDRs(ctx context.Context, rdb rueidis.Client) ([]string, error) {
 	}
 	// Extract CIDRs from keys
 	var cidrs []string
-	var sorted []*cidr.CIDR
+	var sorted []*net.IPNet
 	for _, key := range keys {
 		// Remove the prefix from the key
 		add := strings.TrimPrefix(key, cidrKeyPrefix)
-		if c, err := cidr.Parse(add); err != nil {
+		if _, c, err := net.ParseCIDR(add); err != nil {
 			log.Println("Error parsing CIDR:", err)
 			continue
-		} else if ones, _ := c.MaskSize(); ones < 24 {
-			log.Printf("Wrong bits CIDR: %#v, from address: %#v, from key: %#v\n", c.CIDR().String(), add, key)
+		} else if ones, _ := c.Mask.Size(); ones < 24 {
+			log.Printf("Wrong bits CIDR: %#v, from address: %#v, from key: %#v\n", c.String(), add, key)
 			continue
 		} else {
 			sorted = append(sorted, c)
 		}
 	}
-	cidr.SortCIDRAsc(sorted)
-	for _, c := range sorted {
-		cidrs = append(cidrs, c.CIDR().String())
+	merged := Merge(sorted)
+	for _, c := range merged {
+		cidrs = append(cidrs, c.String())
 	}
 	return cidrs, nil
 }
 
-func validCIDR(c *cidr.CIDR) bool {
-	invalidCIDR := []*cidr.CIDR{
-		cidr.ParseNoError("0.0.0.0/8"),
-		cidr.ParseNoError("10.0.0.0/8"),
-		cidr.ParseNoError("100.64.0.0/10"),
-		cidr.ParseNoError("127.0.0.0/8"),
-		cidr.ParseNoError("169.254.0.0/16"),
-		cidr.ParseNoError("172.16.0.0/12"),
-		cidr.ParseNoError("192.0.0.0/24"),
-		cidr.ParseNoError("192.0.2.0/24"),
-		cidr.ParseNoError("192.88.99.0/24"),
-		cidr.ParseNoError("192.168.0.0/16"),
-		cidr.ParseNoError("198.18.0.0/15"),
-		cidr.ParseNoError("198.51.100.0/24"),
-		cidr.ParseNoError("203.0.113.0/24"),
-		cidr.ParseNoError("240.0.0.0/4"),
-		cidr.ParseNoError("255.255.255.255/32"),
+func validCIDR(c *net.IPNet) bool {
+	invalidCIDR := []*net.IPNet{}
+	invalidList := []string{
+		"0.0.0.0/8",
+		"10.0.0.0/8",
+		"100.64.0.0/10",
+		"127.0.0.0/8",
+		"169.254.0.0/16",
+		"172.16.0.0/12",
+		"192.0.0.0/24",
+		"192.0.2.0/24",
+		"192.88.99.0/24",
+		"192.168.0.0/16",
+		"198.18.0.0/15",
+		"198.51.100.0/24",
+		"203.0.113.0/24",
+		"240.0.0.0/4",
+		"255.255.255.255/32",
 	}
 
+	for _, l := range invalidList {
+		_, ll, _ := net.ParseCIDR(l)
+		invalidCIDR = append(invalidCIDR, ll)
+	}
 	for _, r := range invalidCIDR {
-		if r.Contains(c.IP().String()) {
+		if r.Contains(c.IP) {
 			return false
 		}
 	}
 	return true
+}
+
+// Merge finds adjacent networks in ipNets and merges them. It handles
+// both IPv4 and IPv6 networks, even in the same slice.
+func Merge(ipNets []*net.IPNet) []*net.IPNet {
+	if len(ipNets) <= 1 {
+		return ipNets
+	}
+	t := radix.New()
+	for i, ipNet := range ipNets {
+		t.Insert(binprefix(ipNet), ipNets[i])
+	}
+	for {
+		done := true
+		for _, ipNet := range ipNets {
+			superIPNet := supernet(ipNet)
+			if superIPNet == nil {
+				continue
+			}
+			prefix := binprefix(superIPNet)
+			found := 0
+			t.WalkPrefix(prefix, func(s string, v interface{}) bool {
+				if len(s) == len(prefix)+1 {
+					found++
+				}
+				return found == 2
+			})
+			if found == 2 {
+				t.DeletePrefix(prefix)
+				t.Insert(prefix, superIPNet)
+				done = false
+			}
+		}
+		if done {
+			break
+		}
+		ipNets = make([]*net.IPNet, 0, t.Len())
+		t.WalkPrefix("", func(s string, v interface{}) bool {
+			ipNets = append(ipNets, v.(*net.IPNet))
+			return false
+		})
+	}
+	return ipNets
+}
+
+func binprefix(ipNet *net.IPNet) string {
+	var (
+		s  string
+		ip = ipNet.IP
+	)
+	if ip4 := ip.To4(); ip4 != nil {
+		ip = ip4
+		s += "4:"
+	} else {
+		s += "6:"
+	}
+	for _, b := range ip {
+		s += fmt.Sprintf("%08b", b)
+	}
+	ones, _ := ipNet.Mask.Size()
+	return s[0 : 2+ones]
+}
+
+func supernet(ipNet *net.IPNet) *net.IPNet {
+	ones, bits := ipNet.Mask.Size()
+	if ones == 0 {
+		return nil
+	}
+	mask := net.CIDRMask(ones-1, bits)
+	return &net.IPNet{
+		IP:   ipNet.IP.Mask(mask),
+		Mask: mask,
+	}
 }
