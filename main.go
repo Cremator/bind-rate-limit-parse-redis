@@ -188,11 +188,11 @@ func handleSyslogMessages(ctx context.Context, conn net.Conn, rdb rueidis.Client
 	}
 }
 
-func extractCIDRsFromMessage(m string) []string {
+func extractCIDRsFromMessage(m string) map[string]string {
 	// Extract CIDRs from the message
 	cidrRegex := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}\b`)
 	matchesr := cidrRegex.FindAllString(m, -1)
-	var matches []string
+	var matches = make(map[string]string)
 	for _, ms := range matchesr {
 		if _, c, err := net.ParseCIDR(ms); err != nil {
 			log.Println("Error parsing CIDR:", err)
@@ -201,23 +201,23 @@ func extractCIDRsFromMessage(m string) []string {
 			log.Printf("Error CIDR conversion - origin - %s - convert - %s\n", ms, c.String())
 			return matches
 		} else {
-			matches = append(matches, c.String())
+			matches[c.String()] = m
 		}
 	}
 	return matches
 }
 
-func insertCIDRsToRedis(ctx context.Context, rdb rueidis.Client, c []string) {
+func insertCIDRsToRedis(ctx context.Context, rdb rueidis.Client, c map[string]string) {
 	if len(c) == 0 {
 		return
 	}
 
 	// Store CIDRs in Redis with expiration
-	for _, cidr := range c {
+	for cidr, msg := range c {
 		key := cidrKeyPrefix + cidr
 		//log.Printf("Trying to insert %s key into Redis\n", key)
 		r := rand.Intn(expiration) + expiration
-		resp := rdb.Do(ctx, rdb.B().Set().Key(key).Value("1").Build())
+		resp := rdb.Do(ctx, rdb.B().Set().Key(key).Value(msg).Build())
 		if err := resp.Error(); err != nil {
 			log.Println("Error inserting CIDR into Redis:", err)
 			return
