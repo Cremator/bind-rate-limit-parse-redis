@@ -23,7 +23,8 @@ var (
 	redisAddr     string
 	cidrKeyPrefix string
 	cidrWebPrefix string
-	expiration    int
+	expiration    time.Duration
+	randomness    float64
 	redisDB       int
 	httpPort      string
 )
@@ -32,7 +33,8 @@ func init() {
 	flag.StringVar(&redisAddr, "redis", "localhost:6379", "Redis server address")
 	flag.StringVar(&cidrKeyPrefix, "prefix"+":", "cidrs:", "Prefix for keys to store CIDRs")
 	flag.StringVar(&cidrWebPrefix, "/"+"prefix", "/cidrs", "Prefix for HTTP CIDRs endpoint")
-	flag.IntVar(&expiration, "expiration", 86400, "Expiration time for individual CIDRs (in seconds)")
+	flag.DurationVar(&expiration, "expiration", time.Hour*24, "Expiration time for individual CIDRs (in seconds)")
+	flag.Float64Var(&randomness, "randomness", 1.5, "Expiration time randomness")
 	flag.IntVar(&redisDB, "redisdb", 2, "Select Redis DB")
 	flag.StringVar(&httpPort, "port", "8080", "HTTP server port")
 	flag.Parse()
@@ -216,7 +218,7 @@ func insertCIDRsToRedis(ctx context.Context, rdb rueidis.Client, c map[string]st
 	for cidr, msg := range c {
 		key := cidrKeyPrefix + cidr
 		//log.Printf("Trying to insert %s key into Redis\n", key)
-		r := rand.Intn(expiration) + expiration
+		r := rand.Intn(int(expiration.Seconds()*randomness)) + int(expiration)
 		resp := rdb.Do(ctx, rdb.B().Set().Key(key).Value(msg).Build())
 		if err := resp.Error(); err != nil {
 			log.Println("Error inserting CIDR into Redis:", err)
