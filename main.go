@@ -24,6 +24,7 @@ var (
 	cidrKeyPrefix string
 	cidrWebPrefix string
 	expiration    time.Duration
+	redisDelay    time.Duration
 	randomness    float64
 	redisDB       int
 	httpPort      string
@@ -31,12 +32,13 @@ var (
 
 func init() {
 	flag.StringVar(&redisAddr, "redis", "localhost:6379", "Redis server address")
-	flag.StringVar(&cidrKeyPrefix, "prefix"+":", "cidrs:", "Prefix for keys to store CIDRs")
-	flag.StringVar(&cidrWebPrefix, "/"+"prefix", "/cidrs", "Prefix for HTTP CIDRs endpoint")
+	flag.StringVar(&cidrKeyPrefix, "redisprefix", "cidrs:", "Prefix for keys to store CIDRs")
+	flag.StringVar(&cidrWebPrefix, "webprefix", "/cidrs", "Prefix for HTTP CIDRs endpoint")
 	flag.DurationVar(&expiration, "expiration", time.Hour*24, "Expiration time for individual CIDRs (in seconds)")
 	flag.Float64Var(&randomness, "randomness", 1.5, "Expiration time randomness")
 	flag.IntVar(&redisDB, "redisdb", 2, "Select Redis DB")
 	flag.StringVar(&httpPort, "port", "8080", "HTTP server port")
+	flag.DurationVar(&redisDelay, "redis-delay", time.Millisecond*500, "Delay Redis TS.ADDs duration")
 	flag.Parse()
 }
 
@@ -58,6 +60,7 @@ func main() {
 	// Initialize Redis client
 	rdb, err := rueidis.NewClient(rueidis.ClientOption{
 		InitAddress:      []string{redisAddr},
+		MaxFlushDelay:    redisDelay,
 		DisableCache:     true,
 		AlwaysPipelining: true,
 		SelectDB:         redisDB,
