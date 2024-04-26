@@ -221,7 +221,7 @@ func insertCIDRsToRedis(ctx context.Context, rdb rueidis.Client, c map[string]st
 	for cidr, msg := range c {
 		key := cidrKeyPrefix + cidr
 		//log.Printf("Trying to insert %s key into Redis\n", key)
-		r := rand.Intn(int(expiration.Seconds()*randomness)) + int(expiration)
+		r := rand.Intn(int(expiration.Seconds()*randomness)) + int(expiration.Seconds())
 		resp := rdb.Do(ctx, rdb.B().Set().Key(key).Value(msg).Build())
 		if err := resp.Error(); err != nil {
 			log.Println("Error inserting CIDR into Redis:", err)
