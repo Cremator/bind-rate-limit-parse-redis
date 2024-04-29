@@ -4,9 +4,7 @@ go 1.22.1
 
 require github.com/redis/rueidis v1.0.34
 
-require github.com/armon/go-radix v1.0.0 // indirect
-
 require (
-	github.com/thcyron/cidrmerge v1.0.2
+	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/sys v0.19.0 // indirect
 )

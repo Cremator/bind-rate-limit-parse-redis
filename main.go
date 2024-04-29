@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"regexp"
@@ -16,7 +17,7 @@ import (
 	"time"
 
 	"github.com/redis/rueidis"
-	"github.com/thcyron/cidrmerge"
+	"go4.org/netipx"
 )
 
 var (
@@ -199,10 +200,10 @@ func extractCIDRsFromMessage(m string) map[string]string {
 	matchesr := cidrRegex.FindAllString(m, -1)
 	var matches = make(map[string]string)
 	for _, ms := range matchesr {
-		if _, c, err := net.ParseCIDR(ms); err != nil {
+		if c, err := netip.ParsePrefix(ms); err != nil {
 			log.Println("Error parsing CIDR:", err)
 			return matches
-		} else if ones, _ := c.Mask.Size(); ones < 24 || ms != c.String() || !validCIDR(c) {
+		} else if c.Bits() < 24 || ms != c.String() || invalidCIDR(c) {
 			log.Printf("Error CIDR conversion - origin - %s - convert - %s\n", ms, c.String())
 			return matches
 		} else {
@@ -243,55 +244,45 @@ func getAllCIDRs(ctx context.Context, rdb rueidis.Client) ([]string, error) {
 	}
 	// Extract CIDRs from keys
 	var cidrs []string
-	var sorted []*net.IPNet
+	var sorted netipx.IPSetBuilder
 	for _, key := range keys {
 		// Remove the prefix from the key
 		add := strings.TrimPrefix(key, cidrKeyPrefix)
-		if _, c, err := net.ParseCIDR(add); err != nil {
+		if c, err := netip.ParsePrefix(add); err != nil {
 			log.Println("Error parsing CIDR:", err)
 			continue
-		} else if ones, _ := c.Mask.Size(); ones < 24 {
+		} else if ones := c.Bits(); ones < 24 {
 			log.Printf("Wrong bits CIDR: %#v, from address: %#v, from key: %#v\n", c.String(), add, key)
 			continue
 		} else {
-			sorted = append(sorted, c)
+			sorted.AddPrefix(c)
 		}
 	}
-	merged := cidrmerge.Merge(sorted)
-	for _, c := range merged {
+	merged, _ := sorted.IPSet()
+	for _, c := range merged.Prefixes() {
 		cidrs = append(cidrs, c.String())
 	}
 	return cidrs, nil
 }
 
-func validCIDR(c *net.IPNet) bool {
-	invalidCIDR := []*net.IPNet{}
-	invalidList := []string{
-		"0.0.0.0/8",
-		"10.0.0.0/8",
-		"100.64.0.0/10",
-		"127.0.0.0/8",
-		"169.254.0.0/16",
-		"172.16.0.0/12",
-		"192.0.0.0/24",
-		"192.0.2.0/24",
-		"192.88.99.0/24",
-		"192.168.0.0/16",
-		"198.18.0.0/15",
-		"198.51.100.0/24",
-		"203.0.113.0/24",
-		"240.0.0.0/4",
-		"255.255.255.255/32",
-	}
+func invalidCIDR(c netip.Prefix) bool {
+	var invalidCIDR netipx.IPSetBuilder
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("0.0.0.0/8"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("10.0.0.0/8"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("100.64.0.0/10"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("127.0.0.0/8"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("169.254.0.0/16"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("172.16.0.0/12"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("192.0.0.0/24"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("192.0.2.0/24"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("192.88.99.0/24"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("192.168.0.0/16"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("198.18.0.0/15"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("198.51.100.0/24"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("203.0.113.0/24"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("240.0.0.0/4"))
+	invalidCIDR.AddPrefix(netip.MustParsePrefix("255.255.255.255/32"))
 
-	for _, l := range invalidList {
-		_, ll, _ := net.ParseCIDR(l)
-		invalidCIDR = append(invalidCIDR, ll)
-	}
-	for _, r := range invalidCIDR {
-		if r.Contains(c.IP) {
-			return false
-		}
-	}
-	return true
+	r, _ := invalidCIDR.IPSet()
+	return r.ContainsPrefix(c)
 }
